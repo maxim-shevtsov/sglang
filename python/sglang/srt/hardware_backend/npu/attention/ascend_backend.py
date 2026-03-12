@@ -285,11 +285,12 @@ class AscendAttnBackend(AttentionBackend):
 
     def set_prune_state(self, prune_state, layer_id):
         # have to copy the data, to preserve the same addresses, so that the inference always operates the same tensors (needed for graph capture)
-        for heads_group, _ in enumerate(prune_state):  
-            self.prune_state[layer_id][heads_group]['kv_cache_stat'].copy_(prune_state[heads_group]['kv_cache_stat'])
-            self.prune_state[layer_id][heads_group]['kv_cache_pos'].copy_(prune_state[heads_group]['kv_cache_pos'])
-            self.prune_state[layer_id][heads_group]['kv_cache_size_old_guard'] = prune_state[heads_group]['kv_cache_size_old_guard']
-            self.prune_state[layer_id][heads_group]['kv_cache_size_young_guard'] = prune_state[heads_group]['kv_cache_size_young_guard']
+        for heads_group, new_heads_group_state in enumerate(prune_state):
+            current_heads_group_state = self.prune_state[layer_id][heads_group]
+            current_heads_group_state['kv_cache_stat'].copy_(new_heads_group_state['kv_cache_stat'])
+            current_heads_group_state['kv_cache_pos'].copy_(new_heads_group_state['kv_cache_pos'])
+            current_heads_group_state['kv_cache_size_old_guard'] = new_heads_group_state['kv_cache_size_old_guard']
+            current_heads_group_state['kv_cache_size_young_guard'] = new_heads_group_state['kv_cache_size_young_guard']
 
     def get_prune_state(self, layer_id):
         return self.prune_state[id]
