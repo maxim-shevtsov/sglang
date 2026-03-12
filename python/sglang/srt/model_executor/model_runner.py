@@ -620,7 +620,7 @@ class ModelRunner(ModelRunnerKVCacheMixin):
                 kv_cache_size = kv_cache_size_in_pages*self.page_size                
                 head_split_list = [self.model_config.get_num_kv_heads(get_tensor_model_parallel_world_size())]
                 head_size_list = [kv_cache_size]
-                print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ KV-CACHE PRUNING ENABLED $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
+                logging.info("KV-CACHE PRUNING ENABLED")
 
                 self.kv_cache_pruning_config = {
                     "kv_cache_prune_size_young_guard": 408,  # fine-tuned over LongBench
