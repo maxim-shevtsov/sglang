@@ -355,6 +355,7 @@ class ServerArgs:
     prefill_delayer_token_usage_low_watermark: Optional[float] = None
     prefill_delayer_forward_passes_buckets: Optional[List[float]] = None
     prefill_delayer_wait_seconds_buckets: Optional[List[float]] = None
+    kv_cache_pruning_config: Optional[int] = None
 
     # Runtime options
     device: Optional[str] = None
@@ -4641,6 +4642,13 @@ class ServerArgs:
             help="The InfiniBand devices for Mooncake Backend transfer, accepts multiple comma-separated devices "
             "(e.g., --mooncake-ib-device mlx5_0,mlx5_1). "
             "Default is None, which triggers automatic device detection when Mooncake Backend is enabled.",
+        )
+
+        parser.add_argument(
+            "--kv-cache-pruning-config",
+            type=int,
+            default=ServerArgs.kv_cache_pruning_config,
+            help="The maximum size of kv-cache (per each decoder block, in tokens, same number will be used for k and v), used for pruning.",
         )
 
         # Mamba Cache

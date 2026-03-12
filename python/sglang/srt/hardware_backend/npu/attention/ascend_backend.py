@@ -34,6 +34,8 @@ import logging
 
 import numpy as np
 
+from  sglang.srt.hardware_backend.npu.attention.kv_cache_compression import real_prune_prefill_pack, real_prune_prefill_get_default_state, real_prune_update
+
 
 def _reshape_kv_for_fia_nz(
     tensor: torch.Tensor, num_heads: int, head_dim: int, page_size: int
@@ -252,6 +254,13 @@ class AscendAttnBackend(AttentionBackend):
         )
         if self.use_mla:
             self.ringmla_mask = self.ascend_attn_mask_builder.ringmla_mask
+            
+        self.kv_cache_pruning_config = model_runner.kv_cache_pruning_config
+        if self.kv_cache_pruning_config is not None:
+            self.prune_state = {
+                id : real_prune_prefill_get_default_state(self.kv_cache_pruning_config, 1, self.device)  for id in range(model_runner.model_config.num_attention_layers)
+            }
+
 
         # dllm model config
         self.dllm_config = DllmConfig.from_server_args(model_runner.server_args)
@@ -273,10 +282,27 @@ class AscendAttnBackend(AttentionBackend):
     ):
         pass
 
+
+    def set_prune_state(self, prune_state, layer_id):
+        # have to copy the data, to preserve the same addresses, so that the inference always operates the same tensors (needed for graph capture)
+        for heads_group, _ in enumerate(prune_state):  
+            self.prune_state[layer_id][heads_group]['kv_cache_stat'].copy_(prune_state[heads_group]['kv_cache_stat'])
+            self.prune_state[layer_id][heads_group]['kv_cache_pos'].copy_(prune_state[heads_group]['kv_cache_pos'])
+            self.prune_state[layer_id][heads_group]['kv_cache_size_old_guard'] = prune_state[heads_group]['kv_cache_size_old_guard']
+            self.prune_state[layer_id][heads_group]['kv_cache_size_young_guard'] = prune_state[heads_group]['kv_cache_size_young_guard']
+
+    def get_prune_state(self, id):
+        return self.prune_state[id]
+
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         """Init the metadata for a forward pass."""
         self.forward_metadata = ForwardMetadata()
-        seq_lens_max = forward_batch.seq_lens.max()
+        max_len = self.max_context_len
+        if self.kv_cache_pruning_config is not None:
+            max_len = self.kv_cache_pruning_config["kv_cache_size"]
+            forward_batch.seq_lens = forward_batch.seq_lens.minimum(torch.tensor(max_len))
+
+        seq_lens_max = forward_batch.seq_lens.max()                    
         if forward_batch.forward_mode.is_target_verify():
             seq_lens_max += self.speculative_num_draft_tokens
         self.forward_metadata.block_tables = (
@@ -298,6 +324,8 @@ class AscendAttnBackend(AttentionBackend):
             ).int()
 
         self.forward_metadata.seq_lens_cpu_int = forward_batch.seq_lens_cpu.int()
+        self.forward_metadata.seq_lens_cpu_int = self.forward_metadata.seq_lens_cpu_int.minimum(torch.tensor(max_len))
+
         if (
             not forward_batch.forward_mode.is_draft_extend_v2()
             and not forward_batch.forward_mode.is_draft_extend()
@@ -803,7 +831,8 @@ class AscendAttnBackend(AttentionBackend):
 
         if not self.use_mla:
             # In cross attention layer, when there is no vision input,the values of k and v is None
-            if save_kv_cache and k is not None and v is not None:
+            # also, when the kv-cache pruning is enabled it stores the k and v differently (see real_prune_prefill_pack)
+            if save_kv_cache and k is not None and v is not None and self.kv_cache_pruning_config is None:
                 # support cross attention
                 cache_loc = (
                     forward_batch.out_cache_loc
@@ -858,8 +887,23 @@ class AscendAttnBackend(AttentionBackend):
                     q_len_offset += q_len
                 attn_output = attn_output.view(
                     -1, layer.tp_q_head_num * layer.v_head_dim
-                )
-
+                )                   
+                
+                if self.kv_cache_pruning_config is not None:    
+                    kv_cache_state_list = real_prune_prefill_pack(
+                        layer.tp_q_head_num, 
+                        layer.tp_k_head_num, 
+                        self.kv_cache_pruning_config,
+                        forward_batch.out_cache_loc,
+                        q,
+                        k,
+                        v,
+                        k_cache, 
+                        v_cache,
+                        "S,B,N,D",
+                        self.page_size  #first page (of page_size) is reserved
+                    )
+                    self.set_prune_state(kv_cache_state_list, layer.layer_id)
             else:
                 causal = True
                 if (
@@ -896,7 +940,7 @@ class AscendAttnBackend(AttentionBackend):
                             num_heads=layer.tp_q_head_num,
                             num_kv_heads=layer.tp_k_head_num,
                             out=attn_output,
-                        )
+                        )                     
                     else:
                         attn_output = self.attn_alibi(
                             q=q.reshape(-1, layer.tp_q_head_num, layer.qk_head_dim),
@@ -1387,9 +1431,11 @@ class AscendAttnBackend(AttentionBackend):
                     layer, forward_batch.out_cache_loc, k, k_rope
                 )
             else:
-                forward_batch.token_to_kv_pool.set_kv_buffer(
-                    layer, forward_batch.out_cache_loc, k, v
-                )
+                if self.kv_cache_pruning_config is None:    
+                    # when the kv-cache pruning is enabled it stores the k and v differently (see real_prune_update call below)
+                    forward_batch.token_to_kv_pool.set_kv_buffer(
+                        layer, forward_batch.out_cache_loc, k, v
+                    )
 
         if sinks is not None:
             k_cache = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)
@@ -1410,20 +1456,34 @@ class AscendAttnBackend(AttentionBackend):
             return attn_out
 
         if not self.use_mla:
-            k_cache = forward_batch.token_to_kv_pool.get_key_buffer(
-                layer.layer_id
-            ).view(-1, self.page_size, layer.tp_k_head_num * layer.qk_head_dim)
-            v_cache = forward_batch.token_to_kv_pool.get_value_buffer(
-                layer.layer_id
-            ).view(-1, self.page_size, layer.tp_v_head_num * layer.v_head_dim)
             query = q.reshape(-1, 1, layer.tp_q_head_num * layer.qk_head_dim)
+            num_tokens = query.shape[0]                
             if self.forward_metadata.seq_lens_cpu_int is None:
                 actual_seq_len_kv = self.forward_metadata.seq_lens_cpu_list
             else:
                 actual_seq_len_kv = (
                     self.forward_metadata.seq_lens_cpu_int.cpu().int().tolist()
                 )
-            num_tokens = query.shape[0]
+            k_cache = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)
+            v_cache = forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id)
+            
+            if self.kv_cache_pruning_config is not None:   # store k and v values to the position selected internally in the func:
+                states = self.get_prune_state(layer.layer_id)
+                real_prune_update(
+                    states,
+                    self.kv_cache_pruning_config,
+                    layer.tp_q_head_num, 
+                    layer.tp_k_head_num, 
+                    k, 
+                    v,
+                    q,
+                    k_cache, v_cache,
+                    self.page_size   #first page (of page_size) is reserved
+                )            
+            
+            k_cache = k_cache.view(-1, self.page_size, layer.tp_k_head_num * layer.qk_head_dim)
+            v_cache = v_cache.view(-1, self.page_size, layer.tp_v_head_num * layer.v_head_dim)
+            
             workspace = torch_npu._npu_fused_infer_attention_score_get_max_workspace(
                 query,
                 k_cache,
@@ -1571,7 +1631,8 @@ class AscendAttnBackend(AttentionBackend):
 
         if not self.use_mla:
             # In cross attention layer, when there is no vision input,the values of k and v is None
-            if save_kv_cache and k is not None and v is not None:
+            # also, when the kv-cache pruning is enabled it stores the k and v differently (see real_prune_update)
+            if save_kv_cache and k is not None and v is not None and self.kv_cache_pruning_config is None:
                 # support cross attention
                 cache_loc = (
                     forward_batch.out_cache_loc
@@ -1605,6 +1666,21 @@ class AscendAttnBackend(AttentionBackend):
                     actual_seq_len_kv = (
                         self.forward_metadata.seq_lens_cpu_int.cpu().int().tolist()
                     )
+                if self.kv_cache_pruning_config is not None:    
+                    states_list = self.get_prune_state(layer.layer_id)
+                    real_prune_update(
+                        states_list,
+                        self.kv_cache_pruning_config,
+                        layer.tp_q_head_num, 
+                        layer.tp_k_head_num, 
+                        k, 
+                        v,
+                        q,
+                        layer.layer_id,
+                        k_cache, v_cache,
+                        self.page_size   #first page (of page_size) is reserved
+                    )                                                                                    
+                                                                                                                          
                 attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
                     q.view(
                         forward_batch.batch_size,
@@ -1637,8 +1713,7 @@ class AscendAttnBackend(AttentionBackend):
                         (num_tokens, layer.tp_q_head_num, layer.v_head_dim),
                         dtype=query.dtype,
                         device=query.device,
-                    )
-
+                    )                                                                           
                     torch_npu._npu_paged_attention(
                         query=query,
                         key_cache=k_cache,
