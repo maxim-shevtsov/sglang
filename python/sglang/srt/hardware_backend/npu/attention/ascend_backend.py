@@ -1676,7 +1676,6 @@ class AscendAttnBackend(AttentionBackend):
                         k, 
                         v,
                         q,
-                        layer.layer_id,
                         k_cache, v_cache,
                         self.page_size   #first page (of page_size) is reserved
                     )                                                                                    
