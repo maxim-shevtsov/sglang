@@ -40,11 +40,8 @@ def kv_cache_update_(
     
     #guard young positions
     kv_cache_pos_last = kv_cache_pos.max(dim=3,keepdim=True).values
-    # print("kv_cache_pos_last",kv_cache_pos_last)
     current_total_length = kv_cache_pos_last + 1
-    # print("current_total_length",current_total_length)
     pos_young_guard = current_total_length - kv_cache_size_young_guard
-    # print("pos_young_guard",pos_young_guard)
 
     guard_mask = (kv_cache_pos >= pos_young_guard).float()
     kv_cache_mask_by_stat = (kv_cache_stat.narrow(stat_dim_HN,0,1) >= 0).float()
