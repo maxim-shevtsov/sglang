@@ -467,7 +467,7 @@ class ModelRunnerKVCacheMixin:
                 )
                 max_total_num_tokens = self.max_total_num_tokens
                 if self.kv_cache_pruning_config is not None:
-                    # override the dafult (maximum) size with user-specified value
+                    # override the default (maximum) size with user-specified value
                     max_total_num_tokens = min(self.max_total_num_tokens, self.kv_cache_pruning_config["kv_cache_size"])
 
                 self.token_to_kv_pool = NPUMHATokenToKVPool(
