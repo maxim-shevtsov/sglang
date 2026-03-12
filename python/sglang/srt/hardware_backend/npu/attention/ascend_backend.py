@@ -291,7 +291,7 @@ class AscendAttnBackend(AttentionBackend):
             self.prune_state[layer_id][heads_group]['kv_cache_size_old_guard'] = prune_state[heads_group]['kv_cache_size_old_guard']
             self.prune_state[layer_id][heads_group]['kv_cache_size_young_guard'] = prune_state[heads_group]['kv_cache_size_young_guard']
 
-    def get_prune_state(self, id):
+    def get_prune_state(self, layer_id):
         return self.prune_state[id]
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
