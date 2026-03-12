@@ -258,7 +258,7 @@ class AscendAttnBackend(AttentionBackend):
         self.kv_cache_pruning_config = model_runner.kv_cache_pruning_config
         if self.kv_cache_pruning_config is not None:
             self.prune_state = {
-                id : real_prune_prefill_get_default_state(self.kv_cache_pruning_config, 1, self.device)  for id in range(model_runner.model_config.num_attention_layers)
+                layer_id: real_prune_prefill_get_default_state(self.kv_cache_pruning_config, 1, self.device) for layer_id in range(model_runner.model_config.num_attention_layers)
             }
 
 
