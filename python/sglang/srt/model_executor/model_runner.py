@@ -609,11 +609,11 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         self.kv_cache_pruning_config = None
         if server_args.kv_cache_pruning_config is not None:
             if server_args.kv_cache_pruning_config <=0:
-                print("please specify positive number for per-layer cache size for K in tokens(same value will be used for V)")                
+                logging.warning("please specify positive number for per-layer cache size for K in tokens(same value will be used for V)")
             elif not get_bool_env_var("ASCEND_USE_FIA", "False"):  # initial impl is only for FIA
-                print("KV-CACHE PRUNING is currently implemented  only for Ascend's FIA")
+                logging.warning("KV-CACHE PRUNING is currently implemented  only for Ascend's FIA")
             elif server_args.chunked_prefill_size != -1  :  # initial impl doen't support chunked prefill yet
-                print("KV-CACHE PRUNING is currently NOT implemented for chunked prefill (WIP), disabling the pruning ")
+                logging.warning("KV-CACHE PRUNING is currently NOT implemented for chunked prefill (WIP), disabling the pruning ")
             else:                
                 # pad 
                 kv_cache_size_in_pages = (int(server_args.kv_cache_pruning_config-1) // self.page_size) + 1
